@@ -3,8 +3,9 @@ name: Install
 # Installs the latest published release through install.ps1 and the Scoop
 # manifest, so changes to either are checked on a real Windows host.
 on:
+  workflow_dispatch:
   push:
-    branches: [ master, main, develop ]
+    branches: [ master, main, develop, 'bench/**' ]
     paths:
       - install.ps1
       - scoop/**
@@ -56,6 +57,22 @@ jobs:
         (Get-Command octomind).Source
         octomind --version
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    - name: Pinned version into a relative install dir
+      run: |
+        $env:OCTOMIND_VERSION = '0.58.4'
+        $env:OCTOMIND_INSTALL_DIR = 'pinned-bin'
+        Get-Content -Raw ./install.ps1 | Invoke-Expression
+        $expected = Join-Path $PWD 'pinned-bin'
+        $userPath = (Get-Item 'HKCU:\Environment').GetValue('Path', '', 'DoNotExpandEnvironmentNames')
+        $userPath
+        if (-not (($userPath -split ';') -contains $expected)) { throw "absolute $expected missing from user PATH" }
+        if (($userPath -split ';') -contains 'pinned-bin') { throw 'relative entry written to user PATH' }
+        & "$expected\octomind.exe" --version
+        # Re-running must not duplicate the PATH entry
+        Get-Content -Raw ./install.ps1 | Invoke-Expression
+        $count = @((Get-Item 'HKCU:\Environment').GetValue('Path', '', 'DoNotExpandEnvironmentNames') -split ';' | Where-Object { $_ -eq $expected }).Count
+        if ($count -ne 1) { throw "expected one PATH entry, found $count" }
 
   scoop:
     name: Scoop manifest
