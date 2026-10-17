@@ -2,9 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [ master, main, develop ]
+    branches: [ master, main, develop, 'bench/**' ]
   pull_request:
     branches: [ master, main, develop ]
+  workflow_dispatch:
 
 # A new push supersedes whatever is still running for the same branch or PR —
 # there is no point burning runners on a commit nobody is looking at any more.
@@ -44,6 +45,7 @@ jobs:
     name: Test Suite
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         rust: [1.99.0]
@@ -62,6 +64,7 @@ jobs:
       uses: dtolnay/rust-toolchain@master
       with:
         toolchain: ${{ matrix.rust }}
+        components: rustfmt, clippy
 
     - name: Setup protoc
       uses: arduino/setup-protoc@v3
@@ -130,6 +133,38 @@ jobs:
     # RuntimeLibrary mismatch (LNK2038). cc appends env flags last, so this
     # forces /MD onto every MSVC C++ object. cc only reads the target-scoped
     # var when building for that target, so it's inert elsewhere.
+    - name: Format check (Windows)
+      if: runner.os == 'Windows'
+      shell: bash
+      run: cargo fmt --all -- --check
+
+    # Full Windows clippy is informational: master already carries
+    # Windows-only clippy findings unrelated to #168. The next step gates
+    # the files this branch touches.
+    - name: Clippy (Windows, full, informational)
+      if: runner.os == 'Windows'
+      continue-on-error: true
+      shell: bash
+      env:
+        RUSTFLAGS: -C target-feature=-crt-static
+        CXXFLAGS_x86_64_pc_windows_msvc: -MD
+      run: |
+        set -o pipefail
+        cargo clippy --all-targets --all-features --message-format=short -- -D warnings 2>&1 | tee clippy-windows.txt
+
+    - name: Clippy (Windows, files touched by #168)
+      if: runner.os == 'Windows'
+      shell: bash
+      run: |
+        grep -E '^(src|tests)[\\/]' clippy-windows.txt | sort -u || true
+        # process.rs:27 `Duration` (only used by the Unix pgid path) is
+        # flagged identically on master, so it is not counted against #168.
+        if grep -E '(src[\\/]mcp[\\/]process|src[\\/]session[\\/]cancellation|tests[\\/]mcp_windows_process_tree_test)' clippy-windows.txt \
+          | grep -v 'process.rs:27:17: .*unused import: `Duration`'; then
+          echo "clippy findings in #168 files"; exit 1
+        fi
+        echo "no clippy findings in #168 files"
+
     - name: Run tests
       shell: bash
       env:
